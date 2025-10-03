@@ -1,0 +1,2184 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta name="theme-color" content="#1a1a1a" />
+    <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant Jukebox</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://kit.fontawesome.com/e54d0c3ef1.js" crossorigin="anonymous"></script>
+
+    <script>
+        // ===== CONFIGURAZIONE =====
+        // Modifica questi valori con i tuoi dati
+        const CONFIG = {
+            // URL di Home Assistant (senza slash finale)
+            HA_URL: "http://192.168.77.12:8123",
+
+            // Token long-lived di Home Assistant
+            // Crealo da: Profilo -> Token di accesso a lungo termine
+            API_TOKEN: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIzYTQwZTFmMzQyZjU0MTY1YTFiNWI0OTc5ODI5NjliYiIsImlhdCI6MTc1OTQ3NTU2OCwiZXhwIjoyMDc0ODM1NTY4fQ.jjODasA9ecleRRt8klY-Xa_k_92ZUVmhcFqFYNWMZSo",
+
+            // ID entità del media player (es: media_player.your_speaker)
+            MEDIA_PLAYER: "media_player.ufficio_a_2",
+
+            // ID config di Music Assistant (trovalo nei log o in Developer Tools -> States)
+            MUSIC_ASSISTANT_CONFIG_ID: "01K6KFV6GRYV0YGT92YXGZA8FH",
+
+            // Nome della playlist di default da avviare se la queue è vuota (opzionale)
+            DEFAULT_PLAYLIST: "Party Mix"  // Cambia con il nome della tua playlist
+        };
+        // ===== FINE CONFIGURAZIONE =====
+
+        let queueCheckInterval = null;
+        let lastQueueTime = window.localStorage.getItem("lastQueueTime") ?? 0;
+        let queueDelaySeconds = 0;
+        let allTracks = [];
+        let consecutiveErrors = 0;
+        let maxConsecutiveErrors = 3;
+        let isPollingPaused = false;
+    </script>
+
+    <style>
+        .source-filters {
+            display: none;
+            margin: 15px 0;
+            text-align: center;
+        }
+
+        .source-filter-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 0px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 8px 16px;
+            margin: 0 5px 5px 0;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .source-filter-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .source-filter-btn.active {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+            color: #fff;
+        }
+
+        .source-filter-btn img {
+            height: 12px;
+            width: auto;
+        }
+
+        input, select {
+            color: #fff !important;
+            -webkit-text-fill-color: #e5e5e5 !important;
+        }
+
+        #placeholderImage:not([style*="display: none"])~.results-table thead {
+            display: none;
+        }
+
+        #page {
+            border-radius: 8px;
+            padding: 20px;
+            backdrop-filter: blur(5px);
+            position: relative;
+        }
+
+        th {
+            color: #ddd;
+        }
+
+        #page, #accessDenied, #configError {
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+        }
+
+        body.loaded #page,
+        body.loaded #accessDenied,
+        body.loaded #configError {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        #accessDenied, #configError {
+            display: none;
+            text-align: center;
+            padding: 40px 20px;
+            color: #ffffff;
+            border-radius: 8px;
+            margin: 20px auto;
+            backdrop-filter: blur(10px);
+            background: rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+        }
+
+        #configError h2 {
+            color: #ff6b6b;
+            margin-bottom: 20px;
+        }
+
+        #configError code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        #configError ul {
+            text-align: left;
+            margin: 20px auto;
+            max-width: 400px;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 20px auto;
+            padding: 0 20px;
+            box-sizing: border-box;
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        }
+
+        .loader {
+            display: none;
+            width: 26px;
+            height: 26px;
+            position: absolute;
+            right: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 2;
+            background: none;
+            pointer-events: none;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: translateY(-50%) rotate(360deg); }
+        }
+
+        .loader.active {
+            display: block !important;
+        }
+
+        .search-container {
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 25px;
+            position: relative;
+            align-items: center;
+        }
+
+        .search-input-container {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            background: linear-gradient(90deg, rgba(226, 226, 226, 0.13) 0%, rgba(146, 146, 146, 0.1) 100%);
+            box-shadow: 0 4px 24px 0 rgba(224, 224, 224, 0.08);
+            border-radius: 30px;
+            padding: 2px 10px 2px 40px;
+            transition: box-shadow 0.3s, background 0.3s;
+        }
+
+        .search-input-container.focused {
+            box-shadow: 0 0 0 3px #e2e2e2, 0 4px 24px 0 rgba(238, 238, 238, 0.12);
+            background: linear-gradient(90deg, rgba(231, 231, 231, 0.18) 0%, rgba(150, 150, 150, 0.13) 100%);
+        }
+
+        #searchInput {
+            width: 100%;
+            padding: 12px 48px 12px 12px;
+            border: none;
+            font-size: 1.1em;
+            color: #fff;
+            background: transparent;
+            font-weight: 500;
+            border-radius: 30px;
+        }
+
+        #searchInput:focus {
+            outline: none;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 18px;
+            color: #c9c9c9;
+            font-size: 1.2em;
+            pointer-events: none;
+            opacity: 0.8;
+        }
+
+        .clear-button {
+            position: absolute;
+            right: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 2;
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 50%;
+            border: none;
+            color: #fff;
+            font-size: 1.1em;
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+            cursor: pointer;
+        }
+
+        .clear-button.hide {
+            display: none !important;
+        }
+
+        .clear-button:hover {
+            background: rgba(219, 219, 219, 0.25);
+        }
+
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .results-table th {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 12px;
+            text-align: left;
+            font-weight: bold;
+        }
+
+        .results-table td {
+            padding: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        .results-table tbody tr:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .queue-btn {
+            background: #246fe0;
+            color: white;
+            border: 1px solid #373497;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+
+        .queue-btn:hover {
+            background: #1a5bb8;
+        }
+
+        .queue-btn:disabled {
+            background: #cccccc;
+            border-color: #cccccc;
+            cursor: not-allowed;
+        }
+
+        .queue-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: background 0.2s;
+        }
+
+        .queue-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .queue-item.current-track {
+            background: rgba(36, 111, 224, 0.2);
+            border: 1px solid rgba(36, 111, 224, 0.5);
+        }
+
+        .queue-item-controls {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
+        }
+
+        .queue-item-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .queue-item-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .queue-item-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: #999;
+            padding: 12px 24px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: bold;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab-btn:hover {
+            color: #fff;
+        }
+
+        .tab-btn.active {
+            color: #fff;
+            border-bottom-color: #246fe0;
+        }
+
+        .tab-content {
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .library-type-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: bold;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .library-type-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .library-type-btn.active {
+            background: rgba(36, 111, 224, 0.3);
+            border-color: rgba(36, 111, 224, 0.5);
+        }
+
+        .library-item {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .library-item:hover {
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .library-item-image {
+            width: 60px;
+            height: 60px;
+            border-radius: 4px;
+            object-fit: cover;
+            flex-shrink: 0;
+        }
+
+        .album-art {
+            width: 60px;
+            height: 60px;
+            border-radius: 4px;
+            object-fit: cover;
+        }
+
+        #currentTrackInfo {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+
+        .player-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .player-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+
+        .player-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.1);
+        }
+
+        .player-btn.play-pause {
+            width: 60px;
+            height: 60px;
+            font-size: 24px;
+            background: #1db954;
+            border-color: #1db954;
+        }
+
+        .player-btn.play-pause:hover {
+            background: #1ed760;
+        }
+
+        .seek-bar-container {
+            margin-top: 15px;
+        }
+
+        .seek-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .seek-progress {
+            height: 100%;
+            background: #1db954;
+            border-radius: 3px;
+            position: relative;
+        }
+
+        .seek-thumb {
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 12px;
+            background: white;
+            border-radius: 50%;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .seek-bar:hover .seek-thumb {
+            opacity: 1;
+        }
+
+        .time-display {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85em;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        /* Volume Slider Style */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+            height: 6px;
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            background: white;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
+            background: white;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        h1 {
+            color: #fff;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+
+        .now-playing-header {
+            color: #999;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="configError">
+        <h2>⚠️ Configurazione Richiesta</h2>
+        <p>Prima di utilizzare il jukebox, devi configurare i seguenti parametri nel codice HTML:</p>
+        <ul>
+            <li><code>HA_URL</code> - URL di Home Assistant</li>
+            <li><code>API_TOKEN</code> - Token di accesso lungo termine</li>
+            <li><code>MEDIA_PLAYER</code> - ID del media player</li>
+            <li><code>MUSIC_ASSISTANT_CONFIG_ID</code> - ID configurazione Music Assistant</li>
+        </ul>
+        <p>Modifica la sezione <code>CONFIG</code> all'inizio del file HTML.</p>
+        <p style="margin-top: 20px; font-size: 0.9em; color: #ccc;">
+            Per creare un token: Profilo → Token di accesso a lungo termine → Crea token
+        </p>
+    </div>
+
+    <div id="accessDenied">
+        <h2>Jukebox Non Disponibile</h2>
+        <p>Impossibile connettersi a Home Assistant. Verifica la configurazione.</p>
+    </div>
+
+    <div id="page">
+        <h1>🎵 Music Assistant Jukebox</h1>
+
+        <div id="currentTrackInfo">
+            <div class="now-playing-header">Now Playing</div>
+            <div>Caricamento...</div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div style="display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 2px solid rgba(255,255,255,0.1);">
+            <button class="tab-btn active" onclick="switchTab('search')">
+                <i class="fa-solid fa-search"></i> Cerca
+            </button>
+            <button class="tab-btn" onclick="switchTab('library')">
+                <i class="fa-solid fa-book"></i> Libreria
+            </button>
+        </div>
+
+        <!-- Search Tab -->
+        <div id="searchTab" class="tab-content">
+            <div class="search-container">
+                <div class="search-input-container">
+                    <i class="fa-solid fa-search search-icon"></i>
+                    <input type="text" id="searchInput" placeholder="Cerca brani, artisti, album...">
+                    <button class="clear-button hide" id="clearSearch">
+                        <i class="fa-solid fa-times"></i>
+                    </button>
+                    <div class="loader" id="searchLoader"></div>
+                </div>
+            </div>
+
+            <div id="sourceFilters" class="source-filters"></div>
+        </div>
+
+        <!-- Library Tab -->
+        <div id="libraryTab" class="tab-content" style="display: none;">
+            <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+                <button class="library-type-btn active" onclick="loadLibrary('playlist')">
+                    <i class="fa-solid fa-list"></i> Playlist
+                </button>
+                <button class="library-type-btn" onclick="loadLibrary('artist')">
+                    <i class="fa-solid fa-user"></i> Artisti
+                </button>
+                <button class="library-type-btn" onclick="loadLibrary('album')">
+                    <i class="fa-solid fa-compact-disc"></i> Album
+                </button>
+                <button class="library-type-btn" onclick="loadLibrary('track')">
+                    <i class="fa-solid fa-music"></i> Brani
+                </button>
+            </div>
+
+            <!-- Filtri provider per libreria -->
+            <div id="libraryProviderFilters" class="source-filters"></div>
+
+            <div id="libraryContent" style="min-height: 200px;">
+                <div style="text-align: center; padding: 40px; color: #999;">
+                    <i class="fa-solid fa-book" style="font-size: 48px; margin-bottom: 15px; display: block;"></i>
+                    Seleziona una categoria per sfogliare la tua libreria
+                </div>
+            </div>
+        </div>
+
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>Album</th>
+                    <th>Brano</th>
+                    <th>Artista</th>
+                    <th>Sorgente</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="songResults">
+            </tbody>
+        </table>
+
+        <!-- Gestione Coda -->
+        <div id="queueManagement" style="margin-top: 40px; display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="color: #fff; margin: 0;">
+                    <i class="fa-solid fa-list"></i> Coda di Riproduzione
+                </h2>
+                <button onclick="toggleQueueView()" class="queue-btn" id="toggleQueueBtn">
+                    <i class="fa-solid fa-chevron-up"></i> Nascondi
+                </button>
+            </div>
+
+            <div id="queueContent">
+                <div style="background: rgba(255, 255, 255, 0.05); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; color: #fff;">
+                        <div>
+                            <strong id="queueCount">0 brani in coda</strong>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button onclick="clearQueue()" class="queue-btn" style="background: #f44336;">
+                                <i class="fa-solid fa-trash"></i> Svuota Coda
+                            </button>
+                            <button onclick="skipToNext()" class="queue-btn">
+                                <i class="fa-solid fa-forward"></i> Prossimo
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="queueItems" style="max-height: 500px; overflow-y: auto;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Verifica configurazione
+        function checkConfiguration() {
+            if (CONFIG.API_TOKEN === "YOUR_LONG_LIVED_ACCESS_TOKEN_HERE" ||
+                CONFIG.MEDIA_PLAYER === "media_player.your_speaker" ||
+                CONFIG.MUSIC_ASSISTANT_CONFIG_ID === "your_music_assistant_config_id") {
+                return false;
+            }
+            return true;
+        }
+
+        // API Endpoints
+        const SEARCH_API_ENDPOINT = CONFIG.HA_URL + '/api/services/music_assistant/search?return_response';
+        const GETQUEUE_API_ENDPOINT = CONFIG.HA_URL + '/api/services/music_assistant/get_queue?return_response';
+        const PLAY_API_ENDPOINT = CONFIG.HA_URL + '/api/services/music_assistant/play_media';
+        const QUEUE_COMMAND_ENDPOINT = CONFIG.HA_URL + '/api/services/music_assistant/play_media';
+        const LIBRARY_API_ENDPOINT = CONFIG.HA_URL + '/api/services/music_assistant/get_library?return_response';
+
+        // Media player control endpoints
+        const MEDIA_PLAY_PAUSE = CONFIG.HA_URL + '/api/services/media_player/media_play_pause';
+        const MEDIA_STOP = CONFIG.HA_URL + '/api/services/media_player/media_stop';
+        const MEDIA_NEXT = CONFIG.HA_URL + '/api/services/media_player/media_next_track';
+        const MEDIA_PREVIOUS = CONFIG.HA_URL + '/api/services/media_player/media_previous_track';
+        const MEDIA_SEEK = CONFIG.HA_URL + '/api/services/media_player/media_seek';
+        const SET_STATE = CONFIG.HA_URL + '/api/states/';
+        const MEDIA_VOLUME = CONFIG.HA_URL + '/api/services/media_player/volume_set';
+        const PLAYER_STATE = CONFIG.HA_URL + '/api/states/' + CONFIG.MEDIA_PLAYER;
+
+        let currentQueueItems = []; // Store della coda corrente
+        let currentLibraryType = null; // Tipo di libreria corrente
+        let allLibraryItems = []; // Store di tutti gli item della libreria
+        let selectedLibraryProviders = new Set(); // Provider selezionati per libreria (multi-selezione)
+        let selectedSearchProviders = new Set(); // Provider selezionati per ricerca (multi-selezione)
+
+        function updateSearchIcons(isLoading) {
+            const searchInput = document.getElementById('searchInput');
+            const clearButton = document.getElementById('clearSearch');
+            const loader = document.getElementById('searchLoader');
+
+            if (isLoading) {
+                loader.classList.add('active');
+                clearButton.classList.add('hide');
+            } else {
+                loader.classList.remove('active');
+                if (searchInput.value.trim()) {
+                    clearButton.classList.remove('hide');
+                } else {
+                    clearButton.classList.add('hide');
+                }
+            }
+        }
+
+        // Initialize the app
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Controlla configurazione
+            if (!checkConfiguration()) {
+                document.getElementById('page').style.display = 'none';
+                document.getElementById('accessDenied').style.display = 'none';
+                document.getElementById('configError').style.display = 'block';
+                document.body.classList.add('loaded');
+                return;
+            }
+
+            // Test connessione
+            try {
+                const testResponse = await fetch(CONFIG.HA_URL + '/api/', {
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`
+                    }
+                });
+
+                if (!testResponse.ok) {
+                    throw new Error('Authentication failed');
+                }
+
+                document.getElementById('page').style.display = 'block';
+                document.getElementById('accessDenied').style.display = 'none';
+                document.getElementById('configError').style.display = 'none';
+
+                // Avvia aggiornamento queue
+                getQueue();
+                setInterval(getQueue, 5000);
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                document.getElementById('page').style.display = 'none';
+                document.getElementById('configError').style.display = 'none';
+                document.getElementById('accessDenied').style.display = 'block';
+            }
+
+            document.body.classList.add('loaded');
+
+            let searchTimeout;
+            document.getElementById('searchInput').addEventListener('input', function (e) {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    searchSongs();
+                }, 700);
+            });
+
+            document.getElementById('searchInput').addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') {
+                    clearTimeout(searchTimeout);
+                    updateSearchIcons(true);
+                    searchSongs();
+                }
+            });
+
+            const searchInput = document.getElementById('searchInput');
+            const clearButton = document.getElementById('clearSearch');
+
+            searchInput.addEventListener('input', function () {
+                updateSearchIcons(false);
+                if (!searchInput.value.trim()) {
+                    document.getElementById('songResults').innerHTML = '';
+                    document.getElementById('sourceFilters').style.display = 'none';
+                    allTracks = [];
+                }
+            });
+
+            clearButton.addEventListener('click', function () {
+                searchInput.value = '';
+                updateSearchIcons(false);
+                searchInput.focus();
+                document.getElementById('songResults').innerHTML = '';
+                document.getElementById('sourceFilters').style.display = 'none';
+                allTracks = [];
+            });
+
+            const searchInputContainer = document.querySelector('.search-input-container');
+            searchInput.addEventListener('focus', function () {
+                searchInputContainer.classList.add('focused');
+            });
+            searchInput.addEventListener('blur', function () {
+                searchInputContainer.classList.remove('focused');
+            });
+
+            updateSearchIcons(false);
+        });
+
+        async function getQueue() {
+            // Se il polling è in pausa, non fare richieste
+            if (isPollingPaused) {
+                return;
+            }
+
+            try {
+                // Fai due richieste in parallelo: queue e stato del player
+                const [queueResponse, stateResponse] = await Promise.all([
+                    fetch(GETQUEUE_API_ENDPOINT, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify({ entity_id: CONFIG.MEDIA_PLAYER }),
+                        signal: AbortSignal.timeout(8000)
+                    }),
+                    fetch(PLAYER_STATE, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                            'Content-Type': 'application/json'
+                        },
+                        signal: AbortSignal.timeout(8000)
+                    })
+                ]);
+
+                if (!queueResponse.ok) {
+                    throw new Error(`HTTP ${queueResponse.status}: ${queueResponse.statusText}`);
+                }
+
+                const queueResult = await queueResponse.json();
+                const queueData = queueResult.service_response[CONFIG.MEDIA_PLAYER];
+
+                const playerState = stateResponse.ok ? await stateResponse.json() : null;
+
+                // Debug: mostra le features supportate dal player
+                if (playerState && playerState.attributes) {
+                    console.log('Player supported features:', playerState.attributes.supported_features);
+                }
+
+                // Reset errori consecutivi se la richiesta ha successo
+                consecutiveErrors = 0;
+
+                // Aggiorna la visualizzazione della coda
+                updateQueueDisplay(queueData, playerState);
+
+                if (queueData && queueData.current_item) {
+                    const currentTrackInfo = document.getElementById('currentTrackInfo');
+                    const currentTrack = queueData.current_item;
+
+                    const artistNames = currentTrack.media_item.artists
+                        .map(artist => artist.name)
+                        .join(', ');
+
+                    const progress = currentTrack.duration > 0 ? (queueData.elapsed_time / currentTrack.duration) * 100 : 0;
+                    const playerIsPlaying = playerState && playerState.state === 'playing';
+                    const volume = playerState && playerState.attributes ? (playerState.attributes.volume_level * 100) : 50;
+
+                    // Aggiorna variabili per progress bar fluida (solo se non stiamo facendo seek)
+                    if (!isSeeking) {
+                        lastElapsedTime = queueData.elapsed_time;
+                        lastUpdateTime = Date.now();
+                    }
+
+                    if (playerIsPlaying && !isPlaying) {
+                        isPlaying = true;
+                        requestAnimationFrame(updateProgressBar);
+                    } else if (!playerIsPlaying) {
+                        isPlaying = false;
+                    }
+
+                    // Non aggiornare l'HTML se stiamo facendo seek (per evitare di sovrascrivere la posizione)
+                    if (isSeeking) {
+                        return;
+                    }
+
+                    currentTrackInfo.innerHTML = `
+                        <div class="now-playing-header">Now Playing</div>
+                        <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 15px;">
+                            <div style="flex-shrink: 0;">
+                                ${currentTrack.media_item.image ?
+                            `<img src="${currentTrack.media_item.image}"
+                                        alt="Album Art"
+                                        class="album-art">` :
+                            `<div class="album-art" style="background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center;">
+                                        <i class="fa-solid fa-music" style="font-size: 24px; color: #666;"></i>
+                                    </div>`
+                        }
+                            </div>
+                            <div style="flex-grow: 1; text-align: left;">
+                                <div style="margin-bottom: 5px;">
+                                    <strong>${currentTrack.media_item.name}</strong>
+                                </div>
+                                <div style="color: #ccc; font-size: 0.9em;">
+                                    ${artistNames}
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Seek Bar -->
+                        <div class="seek-bar-container">
+                            <div class="seek-bar" onclick="handleSeekBarClick(event, ${currentTrack.duration})" data-duration="${currentTrack.duration}">
+                                <div class="seek-progress" id="seekProgress" style="width: ${progress}%">
+                                    <div class="seek-thumb"></div>
+                                </div>
+                            </div>
+                            <div class="time-display">
+                                <span id="currentTime">${formatTime(queueData.elapsed_time)}</span>
+                                <span>${formatTime(currentTrack.duration)}</span>
+                            </div>
+                        </div>
+
+                        <!-- Player Controls -->
+                        <div class="player-controls">
+                            <button class="player-btn" onclick="previousTrack()" title="Previous">
+                                <i class="fa-solid fa-backward"></i>
+                            </button>
+                            <button class="player-btn play-pause" onclick="playPause()" title="Play/Pause" id="playPauseBtn">
+                                <i class="fa-solid fa-${playerIsPlaying ? 'pause' : 'play'}"></i>
+                            </button>
+                            <button class="player-btn" onclick="stopPlayback()" title="Stop">
+                                <i class="fa-solid fa-stop"></i>
+                            </button>
+                            <button class="player-btn" onclick="nextTrack()" title="Next">
+                                <i class="fa-solid fa-forward"></i>
+                            </button>
+                        </div>
+
+                        <!-- Volume Control -->
+                        <div style="display: flex; align-items: center; gap: 10px; margin-top: 15px;">
+                            <i class="fa-solid fa-volume-down" style="color: #999;"></i>
+                            <input type="range" id="volumeSlider" min="0" max="100" value="${volume}"
+                                   style="flex: 1;" oninput="setVolume(this.value)">
+                            <i class="fa-solid fa-volume-up" style="color: #999;"></i>
+                            <span id="volumeValue" style="min-width: 40px; text-align: right; color: #999;">${Math.round(volume)}%</span>
+                        </div>
+                    `;
+
+                    if (queueData.next_item) {
+                        const nextTrack = queueData.next_item;
+                        currentTrackInfo.innerHTML += `
+                            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
+                                <div style="color: #999; font-size: 0.9em; margin-bottom: 10px;">Up Next:</div>
+                                <div style="display: flex; align-items: center; gap: 15px;">
+                                    <div style="flex-shrink: 0;">
+                                        ${nextTrack.media_item.image ?
+                                `<img src="${nextTrack.media_item.image}"
+                                                alt="Next Album Art"
+                                                class="album-art">` :
+                                `<div class="album-art" style="background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center;">
+                                                <i class="fa-solid fa-music" style="font-size: 18px; color: #666;"></i>
+                                            </div>`
+                            }
+                                    </div>
+                                    <div style="flex-grow: 1; text-align: left;">
+                                        <div style="margin-bottom: 5px;">
+                                            <strong>${nextTrack.media_item.name}</strong>
+                                        </div>
+                                        <div style="color: #ccc; font-size: 0.9em;">
+                                            ${nextTrack.media_item.artists.map(artist => artist.name).join(', ')}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                } else {
+                    // Nessuna queue attiva - mostra messaggio con opzione per avviare playlist
+                    const hasDefaultPlaylist = CONFIG.DEFAULT_PLAYLIST && CONFIG.DEFAULT_PLAYLIST !== "";
+                    document.getElementById('currentTrackInfo').innerHTML = `
+                        <div class="now-playing-header">Music Assistant Queue</div>
+                        <div style="text-align: center; padding: 20px;">
+                            <i class="fa-solid fa-music" style="font-size: 48px; color: #666; margin-bottom: 15px;"></i>
+                            <div style="margin-bottom: 15px; color: #ccc;">
+                                Nessuna queue attiva di Music Assistant
+                            </div>
+                            ${hasDefaultPlaylist ? `
+                                <button onclick="startDefaultPlaylist()" class="queue-btn" style="margin-top: 10px;">
+                                    <i class="fa-solid fa-play"></i> Avvia ${CONFIG.DEFAULT_PLAYLIST}
+                                </button>
+                            ` : `
+                                <div style="font-size: 0.9em; color: #999;">
+                                    Avvia musica tramite Music Assistant per iniziare
+                                </div>
+                            `}
+                        </div>
+                    `;
+                }
+
+            } catch (error) {
+                consecutiveErrors++;
+                console.error(`Error fetching queue (${consecutiveErrors}/${maxConsecutiveErrors}):`, error.message || error);
+
+                // Se ci sono troppi errori consecutivi, metti in pausa il polling
+                if (consecutiveErrors >= maxConsecutiveErrors && !isPollingPaused) {
+                    isPollingPaused = true;
+                    console.warn('⚠️ Polling messo in pausa per troppi errori. Riproverà tra 30 secondi...');
+
+                    document.getElementById('currentTrackInfo').innerHTML = `
+                        <div class="now-playing-header">Connessione</div>
+                        <div style="text-align: center; padding: 20px;">
+                            <i class="fa-solid fa-exclamation-triangle" style="font-size: 48px; color: #ff9800; margin-bottom: 15px;"></i>
+                            <div style="margin-bottom: 15px; color: #ccc;">
+                                Problemi di connessione con Home Assistant
+                            </div>
+                            <div style="font-size: 0.9em; color: #999;">
+                                Riprovo automaticamente tra 30 secondi...<br>
+                                Ricarica la pagina per riprovare subito
+                            </div>
+                        </div>
+                    `;
+
+                    // Riprova dopo 30 secondi
+                    setTimeout(() => {
+                        console.log('🔄 Ripristino polling...');
+                        isPollingPaused = false;
+                        consecutiveErrors = 0;
+                        getQueue();
+                    }, 30000);
+                } else if (!isPollingPaused) {
+                    // Mostra messaggio normale se non siamo ancora in modalità pausa
+                    const hasDefaultPlaylist = CONFIG.DEFAULT_PLAYLIST && CONFIG.DEFAULT_PLAYLIST !== "";
+                    document.getElementById('currentTrackInfo').innerHTML = `
+                        <div class="now-playing-header">Music Assistant Queue</div>
+                        <div style="text-align: center; padding: 20px;">
+                            <i class="fa-solid fa-music" style="font-size: 48px; color: #666; margin-bottom: 15px;"></i>
+                            <div style="margin-bottom: 15px; color: #ccc;">
+                                Nessuna queue attiva di Music Assistant
+                            </div>
+                            ${hasDefaultPlaylist ? `
+                                <button onclick="startDefaultPlaylist()" class="queue-btn" style="margin-top: 10px;">
+                                    <i class="fa-solid fa-play"></i> Avvia ${CONFIG.DEFAULT_PLAYLIST}
+                                </button>
+                            ` : `
+                                <div style="font-size: 0.9em; color: #999;">
+                                    Avvia musica tramite Music Assistant per iniziare
+                                </div>
+                            `}
+                        </div>
+                    `;
+                }
+            }
+        }
+
+        function formatTime(seconds) {
+            if (typeof seconds !== 'number' || isNaN(seconds) || seconds < 0) {
+                return '--:--';
+            }
+
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+
+        async function searchSongs() {
+            const searchTerm = document.getElementById('searchInput').value.trim();
+            const loader = document.getElementById('searchLoader');
+
+            if (!searchTerm) {
+                return;
+            }
+
+            updateSearchIcons(true);
+            try {
+                const searchRequest = {
+                    limit: "50",
+                    library_only: "false",
+                    config_entry_id: CONFIG.MUSIC_ASSISTANT_CONFIG_ID,
+                    name: searchTerm,
+                };
+
+                const response = await fetch(SEARCH_API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(searchRequest)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+
+                const data = await response.json();
+                const tracks = data.service_response.tracks;
+
+                allTracks = tracks || [];
+                createSourceFilters(allTracks);
+
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Errore durante la ricerca dei brani');
+            } finally {
+                updateSearchIcons(false);
+            }
+        }
+
+        function createSourceFilters(tracks) {
+            const filterContainer = document.getElementById('sourceFilters');
+
+            if (!tracks || tracks.length === 0) {
+                filterContainer.style.display = 'none';
+                displaySongs([]);
+                return;
+            }
+
+            const sources = new Set();
+            tracks.forEach(track => {
+                const sourceProvider = track.uri ? track.uri.split(':')[0] : 'unknown';
+                sources.add(sourceProvider);
+            });
+
+            filterContainer.innerHTML = '';
+
+            sources.forEach(source => {
+                const button = document.createElement('button');
+                button.className = 'source-filter-btn';
+                button.setAttribute('data-source', source);
+
+                if (selectedSearchProviders.has(source)) {
+                    button.classList.add('active');
+                }
+
+                const formattedSource = source.replace(/_/g, ' ');
+                if (source.toLowerCase() === 'spotify') {
+                    button.innerHTML = `<img src="https://storage.googleapis.com/pr-newsroom-wp/1/2023/05/Spotify_Full_Logo_RGB_White.png" alt="Spotify" style="filter: brightness(1.5); height: 16px; width: auto;">`;
+                } else if (source.toLowerCase() === 'apple_music') {
+                    button.innerHTML = `<img src="https://www.apple.com/v/music/a/images/heros/music_logo.svg" alt="Apple Music" style="filter: brightness(0) invert(1); height: 16px; width: auto;">`;
+                } else if (source.toLowerCase() === 'library') {
+                    button.innerHTML = `<img src="https://www.music-assistant.io/assets/transparent-logo.png" alt="Music Assistant" style="filter: brightness(0) invert(1); height: 16px; width: auto;">`;
+                } else {
+                    const displayName = formattedSource.charAt(0).toUpperCase() + formattedSource.slice(1);
+                    button.textContent = displayName;
+                }
+
+                button.onclick = () => toggleSourceFilter(source);
+                filterContainer.appendChild(button);
+            });
+
+            filterContainer.style.display = 'block';
+
+            if (selectedSearchProviders.size > 0) {
+                const filteredTracks = allTracks.filter(track => {
+                    const trackSource = track.uri ? track.uri.split(':')[0] : 'unknown';
+                    return selectedSearchProviders.has(trackSource);
+                });
+                displaySongs(filteredTracks);
+            } else {
+                displaySongs(allTracks);
+            }
+        }
+
+        function toggleSourceFilter(selectedSource) {
+            const button = document.querySelector(`[data-source="${selectedSource}"]`);
+
+            if (button.classList.contains('active')) {
+                // Deseleziona questo provider
+                button.classList.remove('active');
+                selectedSearchProviders.delete(selectedSource);
+            } else {
+                // Seleziona questo provider
+                button.classList.add('active');
+                selectedSearchProviders.add(selectedSource);
+            }
+
+            // Salva in sessionStorage
+            sessionStorage.setItem('selectedSearchProviders', JSON.stringify([...selectedSearchProviders]));
+
+            // Filtra e mostra i risultati
+            if (selectedSearchProviders.size === 0) {
+                // Nessun filtro selezionato - mostra tutto
+                displaySongs(allTracks);
+            } else {
+                // Filtra per i provider selezionati
+                const filteredTracks = allTracks.filter(track => {
+                    const trackSource = track.uri ? track.uri.split(':')[0] : 'unknown';
+                    return selectedSearchProviders.has(trackSource);
+                });
+                displaySongs(filteredTracks);
+            }
+        }
+
+        function displaySongs(tracks) {
+            const songResults = document.getElementById('songResults');
+            songResults.innerHTML = '';
+
+            if (!tracks || tracks.length === 0) {
+                const row = songResults.insertRow();
+                const cell = row.insertCell();
+                cell.colSpan = 5;
+                cell.textContent = 'Nessun brano trovato';
+                cell.style.color = '#fff';
+                cell.style.fontWeight = 'bold';
+                cell.style.fontSize = '1.2em';
+                cell.style.textAlign = 'center';
+                cell.style.padding = '40px';
+                return;
+            }
+
+            tracks.forEach(track => {
+                const row = songResults.insertRow();
+
+                // Album art
+                const albumCell = row.insertCell();
+                if (track.album && track.album.image) {
+                    const img = document.createElement('img');
+                    img.src = track.album.image;
+                    img.className = 'album-art';
+                    img.style.width = '50px';
+                    img.style.height = '50px';
+                    albumCell.appendChild(img);
+                } else {
+                    albumCell.innerHTML = '<i class="fa-solid fa-music"></i>';
+                }
+
+                // Track name
+                const trackCell = row.insertCell();
+                trackCell.textContent = track.name;
+                trackCell.style.fontWeight = 'bold';
+
+                // Artist
+                const artistCell = row.insertCell();
+                if (track.artists && track.artists.length > 0) {
+                    artistCell.textContent = track.artists.map(a => a.name).join(', ');
+                }
+
+                // Source
+                const sourceCell = row.insertCell();
+                const source = track.uri ? track.uri.split(':')[0] : 'unknown';
+                sourceCell.textContent = source.replace(/_/g, ' ').toUpperCase();
+                sourceCell.style.fontSize = '0.8em';
+                sourceCell.style.color = '#999';
+
+                // Queue button
+                const actionCell = row.insertCell();
+                const queueBtn = document.createElement('button');
+                queueBtn.textContent = 'Accoda';
+                queueBtn.className = 'queue-btn';
+                queueBtn.onclick = () => queueSong(track, queueBtn);
+                actionCell.appendChild(queueBtn);
+            });
+        }
+
+        async function queueSong(track, button) {
+            button.disabled = true;
+            button.textContent = 'Accodando...';
+
+            try {
+                // Verifica se esiste una queue attiva
+                const hasActiveQueue = await checkActiveQueue();
+
+                // Se non c'è queue attiva, avvia il brano in play
+                // Altrimenti accodalo normalmente
+                const enqueueMode = hasActiveQueue ? "add" : "play";
+
+                const playRequest = {
+                    entity_id: CONFIG.MEDIA_PLAYER,
+                    media_type: "track",
+                    media_id: track.uri,
+                    enqueue: enqueueMode
+                };
+
+                const response = await fetch(PLAY_API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(playRequest)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to queue song');
+                }
+
+                // Messaggio diverso a seconda dell'azione
+                button.textContent = hasActiveQueue ? '✓ Accodato' : '✓ In riproduzione';
+                setTimeout(() => {
+                    button.textContent = 'Accoda';
+                    button.disabled = false;
+                }, 2000);
+
+                // Reset errori e riprendi polling se era in pausa
+                consecutiveErrors = 0;
+                if (isPollingPaused) {
+                    isPollingPaused = false;
+                    console.log('✅ Connessione ripristinata, polling riattivato');
+                }
+
+                // Aggiorna la queue
+                setTimeout(getQueue, 1000);
+
+            } catch (error) {
+                console.error('Error queuing song:', error);
+                button.textContent = '✗ Errore';
+                setTimeout(() => {
+                    button.textContent = 'Accoda';
+                    button.disabled = false;
+                }, 2000);
+            }
+        }
+
+        async function checkActiveQueue() {
+            try {
+                const queueRequest = {
+                    entity_id: CONFIG.MEDIA_PLAYER
+                };
+
+                const response = await fetch(GETQUEUE_API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(queueRequest)
+                });
+
+                if (!response.ok) {
+                    return false;
+                }
+
+                const data = await response.json();
+                const queueData = data.service_response[CONFIG.MEDIA_PLAYER];
+
+                // Ritorna true se c'è una queue attiva con almeno un item
+                return queueData && queueData.current_item;
+
+            } catch (error) {
+                console.error('Error checking queue:', error);
+                return false; // In caso di errore, assumiamo non ci sia queue
+            }
+        }
+
+        // Player controls
+        async function playPause() {
+            try {
+                const response = await fetch(MEDIA_PLAY_PAUSE, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ entity_id: CONFIG.MEDIA_PLAYER })
+                });
+
+                if (response.ok) {
+                    setTimeout(getQueue, 500);
+                }
+            } catch (error) {
+                console.error('Play/Pause error:', error);
+            }
+        }
+
+        async function stopPlayback() {
+            try {
+                const response = await fetch(MEDIA_STOP, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ entity_id: CONFIG.MEDIA_PLAYER })
+                });
+
+                if (response.ok) {
+                    setTimeout(getQueue, 500);
+                }
+            } catch (error) {
+                console.error('Stop error:', error);
+            }
+        }
+
+        async function nextTrack() {
+            try {
+                const response = await fetch(MEDIA_NEXT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ entity_id: CONFIG.MEDIA_PLAYER })
+                });
+
+                if (response.ok) {
+                    setTimeout(getQueue, 500);
+                }
+            } catch (error) {
+                console.error('Next track error:', error);
+            }
+        }
+
+        async function previousTrack() {
+            try {
+                const response = await fetch(MEDIA_PREVIOUS, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ entity_id: CONFIG.MEDIA_PLAYER })
+                });
+
+                if (response.ok) {
+                    setTimeout(getQueue, 500);
+                }
+            } catch (error) {
+                console.error('Previous track error:', error);
+            }
+        }
+
+        async function seekTo(position) {
+            try {
+                // Arrotonda la posizione a numero intero
+                const seekPosition = Math.round(position);
+
+                // Blocca aggiornamenti da getQueue e ferma l'animazione
+                isSeeking = true;
+                const wasPlaying = isPlaying;
+                isPlaying = false; // Ferma l'animazione fluida durante il seek
+
+                // Aggiorna visivamente la barra immediatamente
+                const seekProgress = document.getElementById('seekProgress');
+                const currentTime = document.getElementById('currentTime');
+                const seekBar = document.querySelector('.seek-bar');
+
+                if (seekProgress && currentTime && seekBar) {
+                    const duration = parseFloat(seekBar.getAttribute('data-duration') || 0);
+                    if (duration > 0) {
+                        const progress = Math.min((seekPosition / duration) * 100, 100);
+                        seekProgress.style.width = progress + '%';
+                        currentTime.textContent = formatTime(seekPosition);
+                    }
+                }
+
+                const requestBody = {
+                    entity_id: CONFIG.MEDIA_PLAYER,
+                    seek_position: seekPosition
+                };
+
+                console.log('Seeking to:', seekPosition, 'seconds');
+
+                const response = await fetch(MEDIA_SEEK, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                console.log('Seek response:', response.status, response.statusText);
+
+                // Rilascia il blocco dopo 1 secondo e forza un aggiornamento
+                setTimeout(async () => {
+                    isSeeking = false;
+                    await getQueue(); // Sincronizza con lo stato reale del server
+                    if (wasPlaying) {
+                        isPlaying = true;
+                        requestAnimationFrame(updateProgressBar); // Riavvia l'animazione
+                    }
+                }, 1000);
+
+            } catch (error) {
+                console.error('Seek error:', error);
+                isSeeking = false;
+            }
+        }
+
+        function handleSeekBarClick(event, duration) {
+            const seekBar = event.currentTarget;
+            const rect = seekBar.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const percentage = clickX / rect.width;
+            const position = Math.max(0, Math.min(duration * percentage, duration));
+
+            console.log('Seek click:', {
+                clickX,
+                width: rect.width,
+                percentage,
+                duration,
+                position
+            });
+
+            seekTo(position);
+        }
+
+        async function setVolume(volumeLevel) {
+            const volumeValue = document.getElementById('volumeValue');
+            if (volumeValue) {
+                volumeValue.textContent = Math.round(volumeLevel) + '%';
+            }
+
+            try {
+                await fetch(MEDIA_VOLUME, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        entity_id: CONFIG.MEDIA_PLAYER,
+                        volume_level: volumeLevel / 100
+                    })
+                });
+            } catch (error) {
+                console.error('Volume error:', error);
+            }
+        }
+
+        // Aggiornamento fluido della progress bar
+        let lastElapsedTime = 0;
+        let lastUpdateTime = 0;
+        let isPlaying = false;
+        let isSeeking = false;
+
+        function updateProgressBar() {
+            if (!isPlaying) return;
+
+            const now = Date.now();
+            const elapsed = (now - lastUpdateTime) / 1000;
+            const currentElapsed = lastElapsedTime + elapsed;
+
+            const seekProgress = document.getElementById('seekProgress');
+            const currentTime = document.getElementById('currentTime');
+            const seekBar = document.querySelector('.seek-bar');
+
+            if (seekProgress && currentTime && seekBar) {
+                const duration = parseFloat(seekBar.getAttribute('data-duration') || 0);
+                if (duration > 0 && currentElapsed <= duration) {
+                    const progress = Math.min((currentElapsed / duration) * 100, 100);
+                    seekProgress.style.width = progress + '%';
+                    currentTime.textContent = formatTime(currentElapsed);
+                }
+            }
+
+            requestAnimationFrame(updateProgressBar);
+        }
+
+        async function startDefaultPlaylist() {
+            if (!CONFIG.DEFAULT_PLAYLIST) {
+                alert('Nessuna playlist di default configurata');
+                return;
+            }
+
+            try {
+                const playRequest = {
+                    entity_id: CONFIG.MEDIA_PLAYER,
+                    media_type: "playlist",
+                    media_id: CONFIG.DEFAULT_PLAYLIST,
+                    enqueue: "replace"  // Sostituisce la queue esistente
+                };
+
+                const response = await fetch(PLAY_API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(playRequest)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to start playlist');
+                }
+
+                // Reset errori e riprendi polling se era in pausa
+                consecutiveErrors = 0;
+                if (isPollingPaused) {
+                    isPollingPaused = false;
+                    console.log('✅ Connessione ripristinata, polling riattivato');
+                }
+
+                // Mostra messaggio di successo
+                document.getElementById('currentTrackInfo').innerHTML = `
+                    <div class="now-playing-header">Music Assistant Queue</div>
+                    <div style="text-align: center; padding: 20px;">
+                        <i class="fa-solid fa-check-circle" style="font-size: 48px; color: #4caf50; margin-bottom: 15px;"></i>
+                        <div style="margin-bottom: 15px; color: #ccc;">
+                            Playlist "${CONFIG.DEFAULT_PLAYLIST}" avviata!
+                        </div>
+                        <div style="font-size: 0.9em; color: #999;">
+                            Caricamento informazioni...
+                        </div>
+                    </div>
+                `;
+
+                // Aggiorna la queue dopo 2 secondi
+                setTimeout(getQueue, 2000);
+
+            } catch (error) {
+                console.error('Error starting playlist:', error);
+                alert('Errore nell\'avvio della playlist. Verifica che il nome sia corretto.');
+            }
+        }
+
+        // ===== GESTIONE CODA =====
+
+        function updateQueueDisplay(queueData) {
+            const queueManagement = document.getElementById('queueManagement');
+            const queueItems = document.getElementById('queueItems');
+            const queueCount = document.getElementById('queueCount');
+
+            // Verifica che ci sia una queue attiva
+            if (!queueData || !queueData.current_item) {
+                queueManagement.style.display = 'none';
+                return;
+            }
+
+            // Mostra la sezione coda
+            queueManagement.style.display = 'block';
+
+            // Aggiorna contatore (items è il numero totale, current_index è la posizione corrente)
+            const remaining = (queueData.items || 0) - (queueData.current_index || 0);
+            queueCount.textContent = `${remaining} ${remaining === 1 ? 'brano' : 'brani'} in coda (${queueData.items} totali)`;
+
+            // Crea la lista con current e next item (Music Assistant API non fornisce la lista completa)
+            queueItems.innerHTML = '';
+
+            // Current Item
+            const currentItem = queueData.current_item;
+            const currentQueueItem = document.createElement('div');
+            currentQueueItem.className = 'queue-item current-track';
+
+            const currentArtistNames = currentItem.media_item.artists
+                ? currentItem.media_item.artists.map(a => a.name).join(', ')
+                : 'Unknown';
+
+            currentQueueItem.innerHTML = `
+                <div style="color: #4caf50; font-size: 0.8em; font-weight: bold; margin-bottom: 5px;">
+                    <i class="fa-solid fa-play"></i> IN RIPRODUZIONE (${queueData.current_index + 1}/${queueData.items})
+                </div>
+                <div style="flex-shrink: 0;">
+                    ${currentItem.media_item.image ?
+                        `<img src="${currentItem.media_item.image}" class="album-art" style="width: 50px; height: 50px;">` :
+                        `<div style="width: 50px; height: 50px; background: rgba(255,255,255,0.1); border-radius: 4px; display: flex; align-items: center; justify-content: center;">
+                            <i class="fa-solid fa-music" style="color: #666;"></i>
+                        </div>`
+                    }
+                </div>
+                <div style="flex: 1; min-width: 0;">
+                    <div style="color: #fff; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        ${currentItem.media_item.name}
+                    </div>
+                    <div style="color: #ccc; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        ${currentArtistNames}
+                    </div>
+                    ${currentItem.duration ? `<div style="color: #999; font-size: 0.8em;">${formatTime(queueData.elapsed_time)} / ${formatTime(currentItem.duration)}</div>` : ''}
+                </div>
+                <div class="queue-item-controls">
+                    <button class="queue-item-btn" onclick="skipToNext()" title="Prossimo" ${!queueData.next_item ? 'disabled' : ''}>
+                        <i class="fa-solid fa-forward"></i>
+                    </button>
+                </div>
+            `;
+            queueItems.appendChild(currentQueueItem);
+
+            // Next Item (se disponibile)
+            if (queueData.next_item) {
+                const nextItem = queueData.next_item;
+                const nextQueueItem = document.createElement('div');
+                nextQueueItem.className = 'queue-item';
+
+                const nextArtistNames = nextItem.media_item.artists
+                    ? nextItem.media_item.artists.map(a => a.name).join(', ')
+                    : 'Unknown';
+
+                nextQueueItem.innerHTML = `
+                    <div style="color: #999; font-size: 0.8em; font-weight: bold; margin-bottom: 5px;">
+                        <i class="fa-solid fa-clock"></i> PROSSIMO (${queueData.current_index + 2}/${queueData.items})
+                    </div>
+                    <div style="flex-shrink: 0;">
+                        ${nextItem.media_item.image ?
+                            `<img src="${nextItem.media_item.image}" class="album-art" style="width: 50px; height: 50px;">` :
+                            `<div style="width: 50px; height: 50px; background: rgba(255,255,255,0.1); border-radius: 4px; display: flex; align-items: center; justify-content: center;">
+                                <i class="fa-solid fa-music" style="color: #666;"></i>
+                            </div>`
+                        }
+                    </div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="color: #fff; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${nextItem.media_item.name}
+                        </div>
+                        <div style="color: #ccc; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${nextArtistNames}
+                        </div>
+                        ${nextItem.duration ? `<div style="color: #999; font-size: 0.8em;">${formatTime(nextItem.duration)}</div>` : ''}
+                    </div>
+                    <div class="queue-item-controls">
+                        <button class="queue-item-btn" onclick="skipToNext()" title="Riproduci ora">
+                            <i class="fa-solid fa-play"></i>
+                        </button>
+                    </div>
+                `;
+                queueItems.appendChild(nextQueueItem);
+            }
+
+            // Messaggio se ci sono altri brani dopo
+            if (remaining > 2) {
+                const moreItems = document.createElement('div');
+                moreItems.style.cssText = 'text-align: center; padding: 20px; color: #999; font-size: 0.9em; background: rgba(255,255,255,0.03); border-radius: 8px; margin-top: 10px;';
+                moreItems.innerHTML = `
+                    <i class="fa-solid fa-ellipsis"></i> Altri ${remaining - 2} ${remaining - 2 === 1 ? 'brano' : 'brani'} in coda<br>
+                    <span style="font-size: 0.85em; color: #666; margin-top: 5px; display: block;">
+                        L'API di Music Assistant fornisce solo i primi 2 brani della coda
+                    </span>
+                `;
+                queueItems.appendChild(moreItems);
+            }
+        }
+
+        function toggleQueueView() {
+            const queueContent = document.getElementById('queueContent');
+            const toggleBtn = document.getElementById('toggleQueueBtn');
+
+            if (queueContent.style.display === 'none') {
+                queueContent.style.display = 'block';
+                toggleBtn.innerHTML = '<i class="fa-solid fa-chevron-up"></i> Nascondi';
+            } else {
+                queueContent.style.display = 'none';
+                toggleBtn.innerHTML = '<i class="fa-solid fa-chevron-down"></i> Mostra';
+            }
+        }
+
+        async function skipToNext() {
+            try {
+                const response = await fetch(CONFIG.HA_URL + '/api/services/media_player/media_next_track', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        entity_id: CONFIG.MEDIA_PLAYER
+                    })
+                });
+
+                if (!response.ok) throw new Error('Failed to skip');
+
+                // Aggiorna la coda
+                setTimeout(getQueue, 500);
+            } catch (error) {
+                console.error('Error skipping track:', error);
+                alert('Errore nel passare al brano successivo');
+            }
+        }
+
+        async function clearQueue() {
+            if (!confirm('Vuoi davvero fermare la riproduzione e svuotare la coda?')) return;
+
+            try {
+                // Step 1: Ferma la riproduzione
+                await fetch(CONFIG.HA_URL + '/api/services/media_player/media_stop', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        entity_id: CONFIG.MEDIA_PLAYER
+                    })
+                });
+
+                // Step 2: Svuota la coda usando clear_items di media_player
+                await fetch(CONFIG.HA_URL + '/api/services/media_player/clear_playlist', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        entity_id: CONFIG.MEDIA_PLAYER
+                    })
+                });
+
+                console.log('Queue cleared successfully');
+
+                // Aggiorna la visualizzazione dopo un secondo
+                setTimeout(getQueue, 1000);
+
+            } catch (error) {
+                console.error('Error clearing queue:', error);
+                // Anche se c'è un errore, la riproduzione dovrebbe essere fermata
+                setTimeout(getQueue, 1000);
+            }
+        }
+
+        async function removeQueueItem(index) {
+            // Music Assistant non ha un comando diretto per rimuovere un item specifico
+            // Workaround: ricostruire la coda senza quell'item
+            alert('Funzione in sviluppo: Music Assistant non supporta la rimozione di singoli brani dalla coda tramite API.');
+        }
+
+        async function moveQueueItem(index, direction) {
+            alert('Funzione in sviluppo: Music Assistant non supporta il riordino della coda tramite API.');
+        }
+
+        async function playQueueItem(index) {
+            try {
+                // Salta direttamente al brano desiderato
+                const currentIndex = currentQueueItems.findIndex((item, i) => i === index);
+                const skips = index - currentQueueItems.findIndex((item, i) => {
+                    return i === currentQueueItems.findIndex(x => x === currentQueueItems[0]);
+                });
+
+                // Per ora, mostra un messaggio che la funzione è limitata
+                alert('Funzione in sviluppo: Music Assistant ha limitazioni nel saltare a brani specifici via API. Usa i pulsanti "Prossimo" per avanzare nella coda.');
+            } catch (error) {
+                console.error('Error playing queue item:', error);
+            }
+        }
+
+        // ===== GESTIONE LIBRERIA =====
+
+        function switchTab(tab) {
+            // Update tab buttons
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+
+            // Show/hide tabs
+            if (tab === 'search') {
+                document.getElementById('searchTab').style.display = 'block';
+                document.getElementById('libraryTab').style.display = 'none';
+            } else {
+                document.getElementById('searchTab').style.display = 'none';
+                document.getElementById('libraryTab').style.display = 'block';
+            }
+        }
+
+        async function loadLibrary(mediaType) {
+            currentLibraryType = mediaType;
+
+            // Update button states
+            document.querySelectorAll('.library-type-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+
+            const libraryContent = document.getElementById('libraryContent');
+            libraryContent.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loader active" style="position: relative; margin: 0 auto;"></div></div>';
+
+            try {
+                const requestBody = {
+                    media_type: mediaType,
+                    limit: 50,
+                    order_by: mediaType === 'track' ? 'last_played_desc' : 'name'
+                };
+
+                // Aggiungi config_entry_id se disponibile
+                if (CONFIG.MUSIC_ASSISTANT_CONFIG_ID) {
+                    requestBody.config_entry_id = CONFIG.MUSIC_ASSISTANT_CONFIG_ID;
+                }
+
+                console.log('Library request:', requestBody);
+
+                const response = await fetch(LIBRARY_API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load library');
+                }
+
+                const data = await response.json();
+                console.log('Library response:', data);
+
+                // La risposta potrebbe essere in data.service_response.items o direttamente data.service_response
+                const items = data.service_response?.items || data.service_response || [];
+
+                console.log('Items:', items, 'Is array:', Array.isArray(items));
+
+                // Salva gli item e crea filtri
+                allLibraryItems = items;
+                createLibraryProviderFilters(items);
+
+                // Mostra gli item
+                displayLibraryItems(items, mediaType);
+
+            } catch (error) {
+                console.error('Error loading library:', error);
+                libraryContent.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #f44336;">
+                        <i class="fa-solid fa-exclamation-triangle" style="font-size: 48px; margin-bottom: 15px; display: block;"></i>
+                        Errore nel caricamento della libreria
+                    </div>
+                `;
+            }
+        }
+
+        function getProviderFromImageUrl(imageUrl) {
+            if (!imageUrl) return null;
+
+            if (imageUrl.includes('qobuz.com')) return 'qobuz';
+            if (imageUrl.includes('tidal.com')) return 'tidal';
+            if (imageUrl.includes('scdn.co')) return 'spotify';
+            if (imageUrl.includes('mzstatic.com')) return 'apple_music';
+            if (imageUrl.includes('ytimg.com') || imageUrl.includes('youtube.com')) return 'youtube';
+            if (imageUrl.includes('deezer.com')) return 'deezer';
+
+            return null;
+        }
+
+        function createLibraryProviderFilters(items) {
+            const filterContainer = document.getElementById('libraryProviderFilters');
+
+            if (!items || items.length === 0) {
+                filterContainer.style.display = 'none';
+                return;
+            }
+
+            // Estrai provider dalle URL delle immagini
+            const providers = new Set();
+            items.forEach(item => {
+                const image = item.image || item.metadata?.images?.[0]?.url;
+                const provider = getProviderFromImageUrl(image);
+                if (provider) {
+                    providers.add(provider);
+                }
+            });
+
+            console.log('Library providers from images:', Array.from(providers));
+
+            // Se c'è un solo provider o nessuno, nascondi i filtri
+            if (providers.size <= 1) {
+                filterContainer.style.display = 'none';
+                return;
+            }
+
+            filterContainer.innerHTML = '';
+            filterContainer.style.display = 'block';
+
+            // Crea pulsanti filtro
+            providers.forEach(provider => {
+                const button = document.createElement('button');
+                button.className = 'source-filter-btn';
+                button.setAttribute('data-provider', provider);
+
+                if (selectedLibraryProviders.has(provider)) {
+                    button.classList.add('active');
+                }
+
+                // Usa le stesse icone della ricerca
+                if (provider.toLowerCase() === 'spotify') {
+                    button.innerHTML = `<img src="https://storage.googleapis.com/pr-newsroom-wp/1/2023/05/Spotify_Full_Logo_RGB_White.png" alt="Spotify" style="filter: brightness(1.5); height: 16px; width: auto;">`;
+                } else if (provider.toLowerCase() === 'apple_music') {
+                    button.innerHTML = `<img src="https://www.apple.com/v/music/a/images/heros/music_logo.svg" alt="Apple Music" style="filter: brightness(0) invert(1); height: 16px; width: auto;">`;
+                } else if (provider.toLowerCase() === 'qobuz') {
+                    button.textContent = 'QOBUZ';
+                } else if (provider.toLowerCase() === 'tidal') {
+                    button.textContent = 'TIDAL';
+                } else if (provider.toLowerCase() === 'youtube') {
+                    button.textContent = 'YOUTUBE';
+                } else if (provider.toLowerCase() === 'deezer') {
+                    button.textContent = 'DEEZER';
+                } else {
+                    const displayName = provider.replace(/_/g, ' ').charAt(0).toUpperCase() + provider.slice(1);
+                    button.textContent = displayName;
+                }
+
+                button.onclick = () => toggleLibraryProviderFilter(provider);
+                filterContainer.appendChild(button);
+            });
+        }
+
+        function toggleLibraryProviderFilter(selectedProvider) {
+            const button = document.querySelector(`#libraryProviderFilters [data-provider="${selectedProvider}"]`);
+
+            if (button && button.classList.contains('active')) {
+                // Deseleziona questo provider
+                button.classList.remove('active');
+                selectedLibraryProviders.delete(selectedProvider);
+            } else {
+                // Seleziona questo provider
+                if (button) button.classList.add('active');
+                selectedLibraryProviders.add(selectedProvider);
+            }
+
+            // Filtra e mostra gli item
+            if (selectedLibraryProviders.size === 0) {
+                // Nessun filtro selezionato - mostra tutto
+                displayLibraryItems(allLibraryItems, currentLibraryType);
+            } else {
+                // Filtra per i provider selezionati
+                const filteredItems = allLibraryItems.filter(item => {
+                    const image = item.image || item.metadata?.images?.[0]?.url;
+                    const itemProvider = getProviderFromImageUrl(image);
+                    return selectedLibraryProviders.has(itemProvider);
+                });
+                displayLibraryItems(filteredItems, currentLibraryType);
+            }
+        }
+
+        function displayLibraryItems(items, mediaType) {
+            const libraryContent = document.getElementById('libraryContent');
+
+            if (!items || items.length === 0) {
+                libraryContent.innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #999;">
+                        <i class="fa-solid fa-inbox" style="font-size: 48px; margin-bottom: 15px; display: block;"></i>
+                        Nessun elemento trovato
+                    </div>
+                `;
+                return;
+            }
+
+            libraryContent.innerHTML = '';
+
+            items.forEach(item => {
+                const libraryItem = document.createElement('div');
+                libraryItem.className = 'library-item';
+
+                const image = item.image || item.metadata?.images?.[0]?.url;
+                const name = item.name;
+                const subtitle = getLibraryItemSubtitle(item, mediaType);
+
+                // Estrai provider dall'URL dell'immagine
+                const provider = getProviderFromImageUrl(image);
+                const providerName = provider ? provider.replace(/_/g, ' ').toUpperCase() : null;
+
+                libraryItem.innerHTML = `
+                    <div style="flex-shrink: 0;">
+                        ${image ?
+                            `<img src="${image}" class="library-item-image">` :
+                            `<div class="library-item-image" style="background: rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center;">
+                                <i class="fa-solid fa-${getMediaIcon(mediaType)}" style="font-size: 24px; color: #666;"></i>
+                            </div>`
+                        }
+                    </div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="color: #fff; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${name}
+                        </div>
+                        ${subtitle ? `
+                            <div style="color: #ccc; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                ${subtitle}
+                            </div>
+                        ` : ''}
+                        ${providerName ? `
+                            <div style="color: #999; font-size: 0.75em; margin-top: 4px;">
+                                <span style="background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 10px;">
+                                    ${providerName}
+                                </span>
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div style="flex-shrink: 0;">
+                        <button class="queue-btn" onclick='playLibraryItem(${JSON.stringify(item)}, "${mediaType}")'>
+                            <i class="fa-solid fa-play"></i> Riproduci
+                        </button>
+                    </div>
+                `;
+
+                libraryContent.appendChild(libraryItem);
+            });
+        }
+
+        function getLibraryItemSubtitle(item, mediaType) {
+            switch (mediaType) {
+                case 'track':
+                    return item.artists?.map(a => a.name).join(', ') || '';
+                case 'album':
+                    return item.artists?.map(a => a.name).join(', ') || '';
+                case 'artist':
+                    return `${item.albums?.length || 0} album`;
+                case 'playlist':
+                    return `${item.metadata?.cache_checksum || 'Playlist'}`;
+                default:
+                    return '';
+            }
+        }
+
+        function getMediaIcon(mediaType) {
+            const icons = {
+                'playlist': 'list',
+                'artist': 'user',
+                'album': 'compact-disc',
+                'track': 'music',
+                'radio': 'radio'
+            };
+            return icons[mediaType] || 'music';
+        }
+
+        async function playLibraryItem(item, mediaType) {
+            try {
+                const hasActiveQueue = await checkActiveQueue();
+
+                const response = await fetch(PLAY_API_ENDPOINT, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CONFIG.API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        entity_id: CONFIG.MEDIA_PLAYER,
+                        media_type: mediaType,
+                        media_id: item.uri,
+                        enqueue: hasActiveQueue ? "add" : "play"
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to play item');
+                }
+
+                // Reset errori e riprendi polling se era in pausa
+                consecutiveErrors = 0;
+                if (isPollingPaused) {
+                    isPollingPaused = false;
+                    console.log('✅ Connessione ripristinata, polling riattivato');
+                }
+
+                // Mostra notifica
+                const action = hasActiveQueue ? 'accodato' : 'in riproduzione';
+                console.log(`${item.name} ${action}`);
+
+                // Aggiorna la queue
+                setTimeout(getQueue, 1000);
+
+            } catch (error) {
+                console.error('Error playing library item:', error);
+                alert('Errore nella riproduzione');
+            }
+        }
+    </script>
+</body>
+</html>
