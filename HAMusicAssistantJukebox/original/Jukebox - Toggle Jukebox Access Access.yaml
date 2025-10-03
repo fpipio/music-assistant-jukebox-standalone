@@ -1,0 +1,33 @@
+alias: Jukebox - Switch Jukebox Access on/off
+description: "Controls access to the jukebox by enableing the app and provisioning an access token or disabling the app and revoking any active token"
+triggers:
+  - trigger: state
+    entity_id:
+      - input_boolean.songrequestaccess
+    from: "off"
+    to: "on"
+  - trigger: state
+    entity_id:
+      - input_boolean.songrequestaccess
+    from: "on"
+    to: "off"
+conditions: []
+actions:
+  - if:
+      - condition: state
+        entity_id: input_boolean.songrequestaccess
+        state: "on"
+    then:
+      - action: shell_command.create_jukebox_token
+        metadata: {}
+        data: {}
+      - action: input_boolean.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id: input_boolean.jukebox_queue
+    else:
+      - action: shell_command.delete_jukebox_token
+        metadata: {}
+        data: {}
+mode: single

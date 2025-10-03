@@ -1,0 +1,16 @@
+alias: Jukebox - Notify of Queued Song
+description: "Tells home assistant that someone has requested a song and to switch the queueing mode for guests for further requests"
+triggers:
+  - trigger: webhook
+    allowed_methods:
+      - POST
+      - GET
+    local_only: false
+    webhook_id: < YOUR WEBHOOK ID HERE >
+conditions: []
+actions:
+  - action: input_boolean.turn_on
+    metadata: {}
+    data: {}
+    target:
+      entity_id: input_boolean.jukebox_queue

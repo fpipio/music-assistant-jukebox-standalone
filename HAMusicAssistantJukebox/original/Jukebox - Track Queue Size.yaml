@@ -1,0 +1,32 @@
+alias: Jukebox - Track Queue Size
+description: "Keeps track of the media player queue length and updates the Jukebox Queue Length helper"
+triggers:
+  - trigger: state
+    entity_id:
+      - media_player.<YOUR MEDIA PLAYER HERE>
+    attribute: media_position_updated_at
+conditions: []
+actions:
+  - action: music_assistant.get_queue
+    metadata: {}
+    data: {}
+    target:
+      entity_id: media_player.<YOUR MEDIA PLAYER HERE>
+    response_variable: jukeboxqueuedetail
+  - variables:
+      speaker_data: "{{ jukeboxqueuedetail['media_player.<YOUR MEDIA PLAYER HERE>'] }}"
+  - variables:
+      items_count: >-
+        {% set matches = speaker_data | regex_findall("'items': (\d+)") %} {{
+        matches[0] if matches else 0 }}
+      current_index: >-
+        {% set matches = speaker_data | regex_findall("'current_index': (\d+)")
+        %} {{ matches[0] if matches else 0 }}
+      remaining: "{{ (items_count | int) - (current_index | int) }}"
+  - action: input_number.set_value
+    target:
+      entity_id: input_number.jukebox_queue_length
+    data:
+      value: "{{ remaining | float }}"
+mode: queued
+max: 10

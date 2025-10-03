@@ -1,0 +1,29 @@
+alias: Jukebox - Set Default Playlist when Jukebox Queue is zero
+description: "Once the guests queued songs are all played, play the default party playlist so the music doesnt stop"
+triggers:
+  - trigger: state
+    entity_id:
+      - input_number.jukebox_queue_length
+    to: "1.0"
+conditions: []
+actions:
+  - action: input_boolean.turn_off
+    metadata: {}
+    data: {}
+    target:
+      entity_id: input_boolean.jukebox_queue
+  - action: media_player.shuffle_set
+    metadata: {}
+    data:
+      shuffle: true
+    target:
+      entity_id: media_player.<YOUR MEDIA PLAYER HERE>
+  - action: music_assistant.play_media
+    metadata: {}
+    data:
+      enqueue: play
+      media_id: <YOUR DEFAULT PARTY PLAYLIST NAME HERE>
+      media_type: playlist
+    target:
+      entity_id: media_player.<YOUR MEDIA PLAYER HERE>
+mode: single
